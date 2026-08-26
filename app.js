@@ -59,6 +59,76 @@ function updateWebMCPBadge() {
   }
 }
 
+function inviteUrl(code) {
+  const url = new URL(location.origin + location.pathname);
+  url.searchParams.set('join', code);
+  return url.toString();
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  document.execCommand('copy');
+  area.remove();
+}
+
+async function copySessionCode() {
+  if (!owner?.code) return;
+  const btn = $('copyCodeBtn');
+  try {
+    await copyText(owner.code);
+    const old = btn.textContent;
+    btn.textContent = 'Copied ✓';
+    setTimeout(() => { btn.textContent = old; }, 1400);
+  } catch {
+    alert(`Session code: ${owner.code}`);
+  }
+}
+
+async function shareInvite() {
+  if (!owner?.code) return;
+  const url = inviteUrl(owner.code);
+  const text = `Join my Blink Borrow session ${owner.code}. You will still choose Join and approve every capability request.`;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Blink Borrow invite', text, url });
+      return;
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+    }
+  }
+
+  try {
+    await copyText(`${text}\n${url}`);
+    const btn = $('shareInviteBtn');
+    const old = btn.textContent;
+    btn.textContent = 'Invite copied ✓';
+    setTimeout(() => { btn.textContent = old; }, 1600);
+  } catch {
+    alert(`${text}\n${url}`);
+  }
+}
+
+function loadInviteFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const raw = params.get('join');
+  if (!raw) return;
+  const code = raw.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 8);
+  if (!code) return;
+  $('joinCode').value = code;
+  $('joinHint').classList.remove('hidden');
+}
+
 function waitForIceComplete(peer, timeoutMs = 8000) {
   if (peer.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
@@ -367,8 +437,11 @@ $('denyBtn').addEventListener('click', () => decide('deny'));
 $('manualRequestBtn').addEventListener('click', async () => {
   try { await requestRemoteNote('Manual demo request'); } catch (error) { setResult($('ownerResult'), error.message, 'denied'); }
 });
+$('copyCodeBtn').addEventListener('click', copySessionCode);
+$('shareInviteBtn').addEventListener('click', shareInvite);
 $('endBtn').addEventListener('click', endSession);
 $('joinCode').addEventListener('keydown', (event) => { if (event.key === 'Enter') joinSession(); });
 
 updateWebMCPBadge();
+loadInviteFromUrl();
 restore();
