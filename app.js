@@ -43,7 +43,7 @@ const capabilityCatalog = {
   page_context: {
     label: 'Page Context',
     icon: '🌐',
-    description: 'Title, URL and visible text captured locally.',
+    description: 'Sanitized title, URL and visible text captured locally.',
     mime: 'application/json'
   }
 };
@@ -632,18 +632,56 @@ async function armFile() {
   }
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function sanitizedPageContextText() {
+  const source = $('guestPanel') || document.body;
+  const clone = source.cloneNode(true);
+
+  // Exclude Blink Borrow control-plane UI and user-entered form controls from Page Context.
+  clone.querySelectorAll('.code-box, .share-actions, .approval, .result, button, input, textarea, script, style')
+    .forEach((el) => el.remove());
+
+  let text = clone.textContent || '';
+  const secrets = new Set([
+    owner?.code,
+    guest?.code,
+    $('joinCode')?.value,
+    new URLSearchParams(location.search).get('join')
+  ].filter(Boolean).map((value) => String(value).trim()).filter(Boolean));
+
+  for (const secret of secrets) {
+    text = text.replace(new RegExp(escapeRegExp(secret), 'gi'), '[REDACTED SESSION CODE]');
+  }
+
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 12000);
+}
+
 function armPageContext() {
   try {
-    const visibleText = document.body.innerText.slice(0, 12000);
+    const visibleText = sanitizedPageContextText();
     const payload = JSON.stringify({
       title: document.title,
-      url: location.href,
+      url: `${location.origin}${location.pathname}`,
       visibleText,
-      capturedAt: new Date().toISOString()
+      capturedAt: new Date().toISOString(),
+      privacy: {
+        sanitized: true,
+        controlPlaneUiExcluded: true,
+        sessionCodeRedacted: true,
+        queryAndFragmentRemoved: true
+      }
     });
     armCapability('page_context', payload, { mime: 'application/json' });
-    setArmedState('pageState', 'CAPTURED & ARMED ✓');
-    setResult($('guestStatus'), 'Page Context captured locally. Waiting for a request.', 'approved');
+    setArmedState('pageState', 'SANITIZED & ARMED ✓');
+    setResult($('guestStatus'), 'Sanitized Page Context captured locally. Control-plane details were excluded.', 'approved');
   } catch (error) {
     setResult($('guestStatus'), error.message, 'denied');
   }
