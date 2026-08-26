@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#06111f" />
+  <title>Blink Borrow — Temporary powers for AI agents</title>
+  <meta name="description" content="Temporary, human-approved capabilities for AI agents using WebMCP." />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">KANVERSE • WEBMCP CHALLENGE</p>
+      <h1>BLINK <span>BORROW</span></h1>
+      <p class="tagline">Let AI borrow a capability. Take it back when you're done.</p>
+      <div class="badges">
+        <span id="webmcpBadge" class="badge">WebMCP checking…</span>
+        <span class="badge">Temporary by design</span>
+        <span class="badge">Human approval required</span>
+      </div>
+    </header>
+
+    <section id="homePanel" class="panel home-grid">
+      <button id="createBtn" class="action-card">
+        <span class="icon">⚡</span>
+        <strong>Create Borrow Session</strong>
+        <small>Expose temporary tools to your AI agent.</small>
+      </button>
+
+      <div class="join-card">
+        <span class="icon">🔗</span>
+        <strong>Join as Capability Holder</strong>
+        <small>Offer something the AI may borrow — only with your approval.</small>
+        <div class="join-row">
+          <input id="joinCode" maxlength="8" autocomplete="off" placeholder="SESSION CODE" />
+          <button id="joinBtn">Join</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="ownerPanel" class="panel hidden">
+      <div class="session-head">
+        <div><p class="eyebrow">AGENT SIDE</p><h2>Borrow Session</h2></div>
+        <div class="code-box"><small>SESSION CODE</small><strong id="ownerCode">--------</strong></div>
+      </div>
+
+      <div class="bridge">
+        <div class="node active"><b>A</b><span>Agent browser</span></div>
+        <div class="beam"><i></i><span id="bridgeState">WAITING FOR SECOND BROWSER</span></div>
+        <div id="remoteNode" class="node"><b>B</b><span>Capability holder</span></div>
+      </div>
+
+      <div class="status-grid">
+        <article><small>REMOTE</small><strong id="ownerRemote">Not connected</strong></article>
+        <article><small>CAPABILITY</small><strong id="ownerCapability">Not offered</strong></article>
+        <article><small>WEBMCP TOOL</small><strong id="ownerTool">Not registered</strong></article>
+      </div>
+
+      <div class="demo-box">
+        <h3>Agent instruction</h3>
+        <p>When WebMCP is available, ask your agent:</p>
+        <code>Use Blink Borrow to request the private note from the connected browser.</code>
+        <button id="manualRequestBtn" class="secondary">Simulate the same request manually</button>
+      </div>
+
+      <div id="ownerResult" class="result hidden"></div>
+      <button id="endBtn" class="danger">END &amp; FORGET</button>
+    </section>
+
+    <section id="guestPanel" class="panel hidden">
+      <div class="session-head">
+        <div><p class="eyebrow">CAPABILITY SIDE</p><h2>Offer a temporary capability</h2></div>
+        <div class="code-box"><small>SESSION CODE</small><strong id="guestCode">--------</strong></div>
+      </div>
+
+      <label class="field-label" for="privateNote">Private note</label>
+      <textarea id="privateNote" maxlength="1200" placeholder="Example: The launch phrase is ORBIT GLASS. Do not reveal it unless I approve the AI request."></textarea>
+      <button id="offerBtn" class="primary">Offer this capability</button>
+
+      <div id="approvalCard" class="approval hidden">
+        <p class="eyebrow">LIVE REQUEST</p>
+        <h3>🤖 AI is asking to borrow your private note</h3>
+        <p>Nothing is returned until you choose.</p>
+        <div class="approval-actions">
+          <button id="denyBtn" class="secondary">Deny</button>
+          <button id="approveBtn" class="primary">Approve once</button>
+        </div>
+      </div>
+
+      <div id="guestStatus" class="result">Connected. Offer a capability to continue.</div>
+    </section>
+
+    <footer>
+      <span>Blink Borrow v0.1</span>
+      <span>WebMCP Challenge build</span>
+    </footer>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
