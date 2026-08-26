@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#06111f" />
   <title>Blink Borrow — Temporary powers for AI agents</title>
-  <meta name="description" content="Temporary, human-approved capabilities for AI agents using WebMCP." />
+  <meta name="description" content="Temporary, human-approved capabilities for AI agents using WebMCP and a direct peer-to-peer pipe." />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -16,7 +16,7 @@
       <p class="tagline">Let AI borrow a capability. Take it back when you're done.</p>
       <div class="badges">
         <span id="webmcpBadge" class="badge">WebMCP checking…</span>
-        <span class="badge">Temporary by design</span>
+        <span class="badge">Direct P2P after rendezvous</span>
         <span class="badge">Human approval required</span>
       </div>
     </header>
@@ -25,7 +25,7 @@
       <button id="createBtn" class="action-card">
         <span class="icon">⚡</span>
         <strong>Create Borrow Session</strong>
-        <small>Expose temporary tools to your AI agent.</small>
+        <small>Expose temporary capability tools to your AI agent.</small>
       </button>
 
       <div class="join-card">
@@ -42,7 +42,10 @@
 
     <section id="ownerPanel" class="panel hidden">
       <div class="session-head">
-        <div><p class="eyebrow">AGENT SIDE</p><h2>Borrow Session</h2></div>
+        <div>
+          <p class="eyebrow">AGENT SIDE</p>
+          <h2>Capability Wallet</h2>
+        </div>
         <div class="session-share">
           <div class="code-box"><small>SESSION CODE</small><strong id="ownerCode">--------</strong></div>
           <div class="share-actions">
@@ -60,15 +63,40 @@
 
       <div class="status-grid">
         <article><small>REMOTE</small><strong id="ownerRemote">Not connected</strong></article>
-        <article><small>CAPABILITY</small><strong id="ownerCapability">Not offered</strong></article>
-        <article><small>WEBMCP TOOL</small><strong id="ownerTool">Not registered</strong></article>
+        <article><small>CAPABILITIES</small><strong id="ownerCapability">None discovered</strong></article>
+        <article><small>WEBMCP TOOLS</small><strong id="ownerTool">Not registered</strong></article>
+      </div>
+
+      <div class="lease-flow" aria-label="Capability lease lifecycle">
+        <span class="lease-step" data-stage="discovered">DISCOVERED</span>
+        <i>→</i>
+        <span class="lease-step" data-stage="requested">REQUESTED</span>
+        <i>→</i>
+        <span class="lease-step" data-stage="approved">APPROVED</span>
+        <i>→</i>
+        <span class="lease-step" data-stage="borrowed">BORROWED</span>
+        <i>→</i>
+        <span class="lease-step" data-stage="revoked">REVOKED</span>
+      </div>
+
+      <div class="wallet-section">
+        <div class="wallet-heading">
+          <div>
+            <p class="eyebrow">REMOTE MANIFEST</p>
+            <h3>Borrowable capabilities</h3>
+          </div>
+          <span id="walletCount" class="wallet-count">0 available</span>
+        </div>
+        <div id="remoteWallet" class="wallet-grid">
+          <div class="wallet-empty">Connect a capability holder and arm something on the other browser.</div>
+        </div>
       </div>
 
       <div class="demo-box">
         <h3>Agent instruction</h3>
-        <p>When WebMCP is available, ask your agent:</p>
-        <code>Use Blink Borrow to request the private note from the connected browser.</code>
-        <button id="manualRequestBtn" class="secondary">Simulate the same request manually</button>
+        <p>In a WebMCP-capable ChatGPT browser, ask:</p>
+        <code>List the Blink Borrow capabilities available, then request the one you need.</code>
+        <p class="demo-note">Manual request buttons on each wallet card let us test the same P2P permission flow without an AI.</p>
       </div>
 
       <div id="ownerResult" class="result hidden"></div>
@@ -77,29 +105,60 @@
 
     <section id="guestPanel" class="panel hidden">
       <div class="session-head">
-        <div><p class="eyebrow">CAPABILITY SIDE</p><h2>Offer a temporary capability</h2></div>
+        <div>
+          <p class="eyebrow">CAPABILITY SIDE</p>
+          <h2>Your Capability Wallet</h2>
+        </div>
         <div class="code-box"><small>SESSION CODE</small><strong id="guestCode">--------</strong></div>
       </div>
 
-      <label class="field-label" for="privateNote">Private note</label>
-      <textarea id="privateNote" maxlength="1200" placeholder="Example: The launch phrase is ORBIT GLASS. Do not reveal it unless I approve the AI request."></textarea>
-      <button id="offerBtn" class="primary">Offer this capability</button>
+      <p class="wallet-intro">Arm only what you want to make discoverable. Payloads stay in this browser until you approve a live request.</p>
+
+      <div class="offer-grid">
+        <article class="offer-card">
+          <div class="offer-title"><span>🔐</span><div><strong>Private Note</strong><small>Secret text, PIN hint, one-time message</small></div></div>
+          <textarea id="privateNote" maxlength="4000" placeholder="Example: The launch phrase is ORBIT GLASS."></textarea>
+          <button id="armPrivateNoteBtn" class="primary">Arm Private Note</button>
+          <span id="privateNoteState" class="offer-state">NOT ARMED</span>
+        </article>
+
+        <article class="offer-card">
+          <div class="offer-title"><span>🧩</span><div><strong>Text / JSON</strong><small>Structured data or a larger text payload</small></div></div>
+          <textarea id="textJson" maxlength="12000" placeholder='Example: {"order":"A17","status":"ready"}'></textarea>
+          <button id="armTextJsonBtn" class="primary">Arm Text / JSON</button>
+          <span id="textJsonState" class="offer-state">NOT ARMED</span>
+        </article>
+
+        <article class="offer-card">
+          <div class="offer-title"><span>📄</span><div><strong>Small Text File</strong><small>TXT, JSON, CSV, Markdown — up to 256 KB</small></div></div>
+          <input id="smallFile" class="file-input" type="file" accept=".txt,.json,.csv,.md,text/plain,application/json,text/csv,text/markdown" />
+          <button id="armFileBtn" class="primary">Arm Selected File</button>
+          <span id="fileState" class="offer-state">NOT ARMED</span>
+        </article>
+
+        <article class="offer-card">
+          <div class="offer-title"><span>🌐</span><div><strong>Page Context</strong><small>Title, URL and visible text from this page</small></div></div>
+          <p class="context-note">No page content leaves this browser until you approve the request.</p>
+          <button id="armPageBtn" class="primary">Capture &amp; Arm Page Context</button>
+          <span id="pageState" class="offer-state">NOT ARMED</span>
+        </article>
+      </div>
 
       <div id="approvalCard" class="approval hidden">
-        <p class="eyebrow">LIVE REQUEST</p>
-        <h3>🤖 AI is asking to borrow your private note</h3>
-        <p>Nothing is returned until you choose.</p>
+        <p class="eyebrow">LIVE CAPABILITY REQUEST</p>
+        <h3>🤖 AI wants to borrow <span id="approvalCapability">a capability</span></h3>
+        <p id="approvalReason">Nothing is returned until you choose.</p>
         <div class="approval-actions">
           <button id="denyBtn" class="secondary">Deny</button>
           <button id="approveBtn" class="primary">Approve once</button>
         </div>
       </div>
 
-      <div id="guestStatus" class="result">Connected. Offer a capability to continue.</div>
+      <div id="guestStatus" class="result">Connected. Arm a capability to continue.</div>
     </section>
 
     <footer>
-      <span>Blink Borrow v0.1</span>
+      <span>Blink Borrow v0.2 • Capability Wallet</span>
       <span>WebMCP Challenge build</span>
     </footer>
   </main>
