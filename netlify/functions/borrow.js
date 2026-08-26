@@ -2,6 +2,7 @@ import { getStore } from '@netlify/blobs';
 import crypto from 'node:crypto';
 
 const TTL_MS = 30 * 60 * 1000;
+const MAX_SDP_BYTES = 64 * 1024;
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -14,6 +15,11 @@ const json = (data, status = 200) => new Response(JSON.stringify(data), {
 const token = (bytes = 18) => crypto.randomBytes(bytes).toString('base64url');
 const code = () => crypto.randomBytes(5).toString('hex').slice(0, 8).toUpperCase();
 const cleanCode = (value = '') => String(value).replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 12);
+
+function validDescription(value, type) {
+  if (!value || value.type !== type || typeof value.sdp !== 'string') return false;
+  return Buffer.byteLength(value.sdp, 'utf8') <= MAX_SDP_BYTES;
+}
 
 async function loadSession(store, sessionCode) {
   const key = `session/${sessionCode}`;
@@ -31,7 +37,6 @@ async function loadSession(store, sessionCode) {
 async function handle(req) {
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
 
-  // Initialize inside the function invocation so Netlify runtime context is available.
   const store = getStore('blink-borrow-sessions');
 
   let body;
@@ -44,7 +49,7 @@ async function handle(req) {
   const action = body?.action;
 
   if (action === 'health') {
-    return json({ ok: true, service: 'blink-borrow', timestamp: Date.now() });
+    return json({ ok: true, service: 'blink-borrow-signaling', timestamp: Date.now() });
   }
 
   if (action === 'create') {
@@ -64,17 +69,13 @@ async function handle(req) {
       ownerKey,
       guestKey: null,
       guestJoined: false,
-      capability: { type: 'private_note', ready: false, note: '' },
-      request: null
+      offer: null,
+      answer: null,
+      signalGeneration: 0
     };
 
     await store.setJSON(key, session);
-    return json({
-      ok: true,
-      code: sessionCode,
-      ownerKey,
-      expiresInSeconds: TTL_MS / 1000
-    });
+    return json({ ok: true, code: sessionCode, ownerKey, expiresInSeconds: TTL_MS / 1000 });
   }
 
   const sessionCode = cleanCode(body?.code);
@@ -99,74 +100,54 @@ async function handle(req) {
 
   if (action === 'state') {
     if (!isOwner && !isGuest) return json({ error: 'Unauthorized' }, 401);
-
     return json({
       ok: true,
       guestJoined: session.guestJoined,
-      capabilityReady: session.capability.ready,
-      request: session.request ? {
-        id: session.request.id,
-        status: session.request.status,
-        createdAt: session.request.createdAt
-      } : null
+      offerReady: Boolean(session.offer),
+      answerReady: Boolean(session.answer),
+      signalGeneration: session.signalGeneration
     });
   }
 
-  if (action === 'offer') {
-    if (!isGuest) return json({ error: 'Unauthorized' }, 401);
-
-    const note = String(body?.note ?? '').trim().slice(0, 1200);
-    if (!note) return json({ error: 'Note is empty' }, 400);
-
-    session.capability = { type: 'private_note', ready: true, note };
-    await store.setJSON(loaded.key, session);
-    return json({ ok: true });
-  }
-
-  if (action === 'request') {
+  if (action === 'publish_offer') {
     if (!isOwner) return json({ error: 'Unauthorized' }, 401);
-    if (!session.guestJoined) return json({ error: 'No remote browser connected' }, 409);
-    if (!session.capability.ready) return json({ error: 'Remote capability is not ready' }, 409);
+    if (!validDescription(body?.offer, 'offer')) return json({ error: 'Invalid WebRTC offer' }, 400);
 
-    const requestId = token(10);
-    session.request = {
-      id: requestId,
-      status: 'pending',
-      createdAt: Date.now()
-    };
-
+    session.signalGeneration += 1;
+    session.offer = body.offer;
+    session.answer = null;
+    session.signalUpdatedAt = Date.now();
     await store.setJSON(loaded.key, session);
-    return json({ ok: true, requestId });
+    return json({ ok: true, signalGeneration: session.signalGeneration });
   }
 
-  if (action === 'decide') {
+  if (action === 'get_offer') {
     if (!isGuest) return json({ error: 'Unauthorized' }, 401);
-    if (!session.request || session.request.id !== body?.requestId) {
-      return json({ error: 'Request not found' }, 404);
-    }
-    if (session.request.status !== 'pending') {
-      return json({ error: 'Request already decided' }, 409);
-    }
-
-    const decision = body?.decision === 'approve' ? 'approved' : 'denied';
-    session.request.status = decision;
-    session.request.decidedAt = Date.now();
-    await store.setJSON(loaded.key, session);
-    return json({ ok: true, status: decision });
-  }
-
-  if (action === 'result') {
-    if (!isOwner) return json({ error: 'Unauthorized' }, 401);
-    if (!session.request || session.request.id !== body?.requestId) {
-      return json({ error: 'Request not found' }, 404);
-    }
-    if (session.request.status === 'pending') return json({ ok: true, status: 'pending' });
-    if (session.request.status === 'denied') return json({ ok: true, status: 'denied' });
-
     return json({
       ok: true,
-      status: 'approved',
-      value: session.capability.note
+      ready: Boolean(session.offer),
+      offer: session.offer,
+      signalGeneration: session.signalGeneration
+    });
+  }
+
+  if (action === 'publish_answer') {
+    if (!isGuest) return json({ error: 'Unauthorized' }, 401);
+    if (!validDescription(body?.answer, 'answer')) return json({ error: 'Invalid WebRTC answer' }, 400);
+
+    session.answer = body.answer;
+    session.signalUpdatedAt = Date.now();
+    await store.setJSON(loaded.key, session);
+    return json({ ok: true, signalGeneration: session.signalGeneration });
+  }
+
+  if (action === 'get_answer') {
+    if (!isOwner) return json({ error: 'Unauthorized' }, 401);
+    return json({
+      ok: true,
+      ready: Boolean(session.answer),
+      answer: session.answer,
+      signalGeneration: session.signalGeneration
     });
   }
 
@@ -183,10 +164,7 @@ export default async (req) => {
   try {
     return await handle(req);
   } catch (error) {
-    console.error('Blink Borrow function error:', error);
-    return json({
-      error: 'Temporary backend error',
-      code: 'BORROW_BACKEND_ERROR'
-    }, 500);
+    console.error('Blink Borrow signaling error:', error);
+    return json({ error: 'Temporary signaling error', code: 'BORROW_SIGNAL_ERROR' }, 500);
   }
 };
