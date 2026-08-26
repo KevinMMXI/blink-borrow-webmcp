@@ -36,13 +36,20 @@
           <input id="joinCode" maxlength="8" autocomplete="off" placeholder="SESSION CODE" />
           <button id="joinBtn">Join</button>
         </div>
+        <div id="joinHint" class="join-hint hidden">Invite code loaded. Tap Join when you're ready.</div>
       </div>
     </section>
 
     <section id="ownerPanel" class="panel hidden">
       <div class="session-head">
         <div><p class="eyebrow">AGENT SIDE</p><h2>Borrow Session</h2></div>
-        <div class="code-box"><small>SESSION CODE</small><strong id="ownerCode">--------</strong></div>
+        <div class="session-share">
+          <div class="code-box"><small>SESSION CODE</small><strong id="ownerCode">--------</strong></div>
+          <div class="share-actions">
+            <button id="copyCodeBtn" class="mini-btn">Copy code</button>
+            <button id="shareInviteBtn" class="mini-btn primary-mini">Share invite</button>
+          </div>
+        </div>
       </div>
 
       <div class="bridge">
