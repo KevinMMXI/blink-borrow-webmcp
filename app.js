@@ -181,7 +181,8 @@ function capabilityManifest() {
     label: cap.label,
     description: cap.description,
     mime: cap.mime,
-    size: cap.size || String(cap.value || '').length
+    size: cap.size || String(cap.value || '').length,
+    filename: cap.filename || null
   }));
 }
 
@@ -326,7 +327,8 @@ function configureChannel(dc, side) {
             capability: msg.capabilityId,
             label,
             payload: msg.payload,
-            mime: msg.mime
+            mime: msg.mime,
+            filename: msg.filename || null
           });
         } else {
           setResult($('ownerResult'), 'ACCESS DENIED by the capability holder.', 'denied');
@@ -452,15 +454,15 @@ async function registerWebMCPTools() {
 
     await document.modelContext.registerTool({
       name: 'blink_borrow_request_capability',
-      description: 'Request one offered capability from the connected Blink Borrow browser. The remote human must explicitly approve once before any payload crosses the direct peer-to-peer pipe.',
+      description: 'Request one offered non-file capability from the connected Blink Borrow browser. The remote human must explicitly approve once before any payload crosses the direct peer-to-peer pipe. Approved access consumes that temporary capability.',
       inputSchema: {
         type: 'object',
         required: ['capability_id'],
         properties: {
           capability_id: {
             type: 'string',
-            enum: Object.keys(capabilityCatalog),
-            description: 'The capability identifier returned by blink_borrow_list_capabilities.'
+            enum: Object.keys(capabilityCatalog).filter((id) => id !== 'small_file'),
+            description: 'The non-file capability identifier returned by blink_borrow_list_capabilities.'
           },
           reason: {
             type: 'string',
@@ -469,19 +471,53 @@ async function registerWebMCPTools() {
         }
       },
       execute: async ({ capability_id, reason = '' }) => await requestCapability(capability_id, reason),
-      annotations: { readOnlyHint: true, untrustedContentHint: true }
+      annotations: { readOnlyHint: false, untrustedContentHint: true }
     }, { signal: toolController.signal });
 
     // Backward-compatible tool preserved from the known-good v0.1 demo.
     await document.modelContext.registerTool({
       name: 'blink_borrow_request_private_note',
-      description: 'Request one-time access to the remote private note through Blink Borrow. The remote human must approve first.',
+      description: 'Request one-time access to the remote private note through Blink Borrow. The remote human must approve first. Approved access consumes the temporary note capability.',
       inputSchema: {
         type: 'object',
         properties: { reason: { type: 'string' } }
       },
       execute: async ({ reason = '' }) => await requestCapability('private_note', reason),
-      annotations: { readOnlyHint: true, untrustedContentHint: true }
+      annotations: { readOnlyHint: false, untrustedContentHint: true }
+    }, { signal: toolController.signal });
+
+    await document.modelContext.registerTool({
+      name: 'blink_borrow_inspect_text_file',
+      description: 'Inspect metadata for the already-selected Small Text File offered by the connected Blink Borrow capability holder. This does not return file contents and does not browse or read the requester computer filesystem.',
+      inputSchema: { type: 'object', properties: {} },
+      execute: async () => {
+        const file = remoteCapabilities.small_file;
+        if (!file) return { available: false, message: 'No Small Text File capability is currently armed.' };
+        return {
+          available: true,
+          capability: 'small_file',
+          filename: file.filename || null,
+          mime: file.mime || 'text/plain',
+          size_bytes: file.size || null
+        };
+      },
+      annotations: { readOnlyHint: true }
+    }, { signal: toolController.signal });
+
+    await document.modelContext.registerTool({
+      name: 'blink_borrow_request_text_file_contents',
+      description: 'Request one-time contents of the already-selected Small Text File capability from the connected remote Blink Borrow holder. This tool does not browse or read the requester computer filesystem. It sends a request through the existing direct P2P pipe, returns contents only after explicit human approval, and approved access consumes the remote file capability.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          reason: {
+            type: 'string',
+            description: 'A short explanation shown to the remote capability holder before approval.'
+          }
+        }
+      },
+      execute: async ({ reason = '' }) => await requestCapability('small_file', reason),
+      annotations: { readOnlyHint: false, untrustedContentHint: true }
     }, { signal: toolController.signal });
 
     await document.modelContext.registerTool({
@@ -496,7 +532,7 @@ async function registerWebMCPTools() {
       annotations: { readOnlyHint: true }
     }, { signal: toolController.signal });
 
-    $('ownerTool').textContent = '4 registered ✓';
+    $('ownerTool').textContent = '6 registered ✓';
   } catch (error) {
     console.error(error);
     $('ownerTool').textContent = 'Registration failed';
