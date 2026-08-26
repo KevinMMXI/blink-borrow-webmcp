@@ -1,0 +1,10 @@
+{
+  "name": "blink-borrow-webmcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Temporary, human-approved capabilities for AI agents using WebMCP.",
+  "dependencies": {
+    "@netlify/blobs": "^10.0.10"
+  }
+}
