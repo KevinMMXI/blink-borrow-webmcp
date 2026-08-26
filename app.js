@@ -8,15 +8,44 @@ let ownerSignalPoll = null;
 let guestSignalPoll = null;
 let pc = null;
 let channel = null;
-let localNote = '';
 let pendingAgentRequests = new Map();
-let activeGuestRequestId = null;
+let activeGuestRequest = null;
+let remoteCapabilities = {};
+let localCapabilities = {};
+let lastLeaseStage = null;
 
 const rtcConfig = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
   ]
+};
+
+const capabilityCatalog = {
+  private_note: {
+    label: 'Private Note',
+    icon: '🔐',
+    description: 'Secret text or a one-time message.',
+    mime: 'text/plain'
+  },
+  text_json: {
+    label: 'Text / JSON',
+    icon: '🧩',
+    description: 'Structured JSON or a larger text payload.',
+    mime: 'text/plain'
+  },
+  small_file: {
+    label: 'Small Text File',
+    icon: '📄',
+    description: 'A small TXT, JSON, CSV or Markdown file.',
+    mime: 'text/plain'
+  },
+  page_context: {
+    label: 'Page Context',
+    icon: '🌐',
+    description: 'Title, URL and visible text captured locally.',
+    mime: 'application/json'
+  }
 };
 
 async function api(payload) {
@@ -129,6 +158,81 @@ function loadInviteFromUrl() {
   $('joinHint').classList.remove('hidden');
 }
 
+function updateLease(stage) {
+  const order = ['discovered', 'requested', 'approved', 'borrowed', 'revoked'];
+  lastLeaseStage = stage;
+  document.querySelectorAll('.lease-step').forEach((el) => {
+    el.classList.remove('active', 'done', 'revoked');
+    const current = order.indexOf(el.dataset.stage);
+    const target = order.indexOf(stage);
+    if (stage === 'revoked' && el.dataset.stage === 'revoked') {
+      el.classList.add('revoked');
+    } else if (current < target) {
+      el.classList.add('done');
+    } else if (current === target) {
+      el.classList.add('active');
+    }
+  });
+}
+
+function capabilityManifest() {
+  return Object.entries(localCapabilities).map(([id, cap]) => ({
+    id,
+    label: cap.label,
+    description: cap.description,
+    mime: cap.mime,
+    size: cap.size || String(cap.value || '').length
+  }));
+}
+
+function publishManifest() {
+  const manifest = capabilityManifest();
+  if (channel?.readyState === 'open') {
+    sendPeer({ type: 'capability_manifest', capabilities: manifest });
+  }
+}
+
+function renderRemoteWallet() {
+  const wallet = $('remoteWallet');
+  const items = Object.values(remoteCapabilities);
+  $('walletCount').textContent = `${items.length} available`;
+  $('ownerCapability').textContent = items.length ? `${items.length} ready ✓` : 'None discovered';
+
+  if (!items.length) {
+    wallet.innerHTML = '<div class="wallet-empty">Connect a capability holder and arm something on the other browser.</div>';
+    return;
+  }
+
+  wallet.innerHTML = '';
+  for (const cap of items) {
+    const card = document.createElement('article');
+    card.className = 'wallet-card ready';
+    card.innerHTML = `
+      <div class="wallet-meta"><span>${cap.icon || '⚡'} REMOTE</span><span>${cap.mime || ''}</span></div>
+      <h4>${escapeHtml(cap.label)}</h4>
+      <p>${escapeHtml(cap.description || '')}</p>
+      <button class="secondary" data-borrow-id="${escapeHtml(cap.id)}">Request once</button>
+    `;
+    wallet.appendChild(card);
+  }
+
+  wallet.querySelectorAll('[data-borrow-id]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await requestCapability(btn.dataset.borrowId, 'Manual Capability Wallet test');
+      } catch (error) {
+        setResult($('ownerResult'), error.message, 'denied');
+      }
+    });
+  });
+}
+
+function escapeHtml(value = '') {
+  return String(value).replace(/[&<>'"]/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+  }[ch]));
+}
+
 function waitForIceComplete(peer, timeoutMs = 8000) {
   if (peer.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
@@ -165,6 +269,7 @@ function sendPeer(message) {
 
 function configureChannel(dc, side) {
   channel = dc;
+
   channel.onopen = () => {
     if (side === 'owner') {
       $('ownerRemote').textContent = 'Connected P2P ✓';
@@ -172,44 +277,72 @@ function configureChannel(dc, side) {
       $('bridgeState').textContent = 'DIRECT P2P PIPE ACTIVE';
       try { sendPeer({ type: 'hello', side: 'owner' }); } catch {}
     } else {
-      setResult($('guestStatus'), localNote ? 'Direct P2P pipe active. Capability armed locally.' : 'Direct P2P pipe active. Offer a capability to continue.', localNote ? 'approved' : '');
-      try { sendPeer({ type: 'hello', side: 'guest', capabilityReady: Boolean(localNote) }); } catch {}
+      setResult($('guestStatus'), 'Direct P2P pipe active. Arm a capability to continue.');
+      try {
+        sendPeer({ type: 'hello', side: 'guest' });
+        publishManifest();
+      } catch {}
     }
   };
+
   channel.onclose = () => {
     if (side === 'owner') {
       $('ownerRemote').textContent = 'Disconnected';
       $('bridgeState').textContent = 'P2P PIPE CLOSED';
+      remoteCapabilities = {};
+      renderRemoteWallet();
     } else {
-      setResult($('guestStatus'), 'P2P pipe closed. The capability is no longer reachable.', 'denied');
+      setResult($('guestStatus'), 'P2P pipe closed. Armed capabilities are no longer reachable.', 'denied');
     }
   };
+
   channel.onmessage = (event) => {
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
 
     if (side === 'owner') {
-      if (msg.type === 'hello' || msg.type === 'capability_state') {
-        $('ownerCapability').textContent = msg.capabilityReady ? 'Private note ready ✓' : 'Not offered';
+      if (msg.type === 'capability_manifest') {
+        remoteCapabilities = {};
+        for (const cap of msg.capabilities || []) {
+          const known = capabilityCatalog[cap.id] || {};
+          remoteCapabilities[cap.id] = { ...known, ...cap };
+        }
+        renderRemoteWallet();
+        if (Object.keys(remoteCapabilities).length) updateLease('discovered');
       }
+
       if (msg.type === 'capability_result') {
         const pending = pendingAgentRequests.get(msg.requestId);
         if (!pending) return;
         pendingAgentRequests.delete(msg.requestId);
+
         if (msg.status === 'approved') {
-          setResult($('ownerResult'), `BORROWED ONCE: ${msg.value}`, 'approved');
-          pending.resolve(`The human approved one-time access. Remote private note: ${msg.value}`);
+          updateLease('approved');
+          setTimeout(() => updateLease('borrowed'), 250);
+          const label = remoteCapabilities[msg.capabilityId]?.label || msg.capabilityId;
+          setResult($('ownerResult'), `BORROWED ONCE · ${label}: ${msg.preview || 'Capability received'}`, 'approved');
+          pending.resolve({
+            status: 'approved',
+            capability: msg.capabilityId,
+            label,
+            payload: msg.payload,
+            mime: msg.mime
+          });
         } else {
           setResult($('ownerResult'), 'ACCESS DENIED by the capability holder.', 'denied');
-          pending.resolve('The human denied access to the remote private note.');
+          pending.resolve({ status: 'denied', capability: msg.capabilityId });
         }
       }
     } else {
       if (msg.type === 'capability_request') {
-        activeGuestRequestId = msg.requestId;
-        $('approvalCard').dataset.requestId = msg.requestId;
+        activeGuestRequest = msg;
+        const cap = localCapabilities[msg.capabilityId];
+        $('approvalCapability').textContent = cap?.label || msg.capabilityId || 'a capability';
+        $('approvalReason').textContent = msg.reason
+          ? `Reason: ${msg.reason}`
+          : 'Nothing is returned until you choose.';
         $('approvalCard').classList.remove('hidden');
-        setResult($('guestStatus'), msg.reason ? `AI request reason: ${msg.reason}` : 'AI is requesting one-time access to your local note.');
+        setResult($('guestStatus'), `Request received for ${cap?.label || msg.capabilityId}. Waiting for your decision.`);
       }
     }
   };
@@ -264,18 +397,20 @@ async function createGuestPeer() {
   }, 1000);
 }
 
-async function requestRemoteNote(reason = '') {
+async function requestCapability(capabilityId, reason = '') {
   if (!owner) throw new Error('No active Blink Borrow session');
   if (!channel || channel.readyState !== 'open') throw new Error('The peer-to-peer pipe is not connected yet');
+  if (!remoteCapabilities[capabilityId]) throw new Error('That capability is not currently available');
 
   const requestId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  setResult($('ownerResult'), 'Request sent directly to the capability holder. Waiting for approval…');
+  updateLease('requested');
+  setResult($('ownerResult'), `Request sent for ${remoteCapabilities[capabilityId].label}. Waiting for human approval…`);
 
   return await new Promise((resolve) => {
     const timeout = setTimeout(() => {
       pendingAgentRequests.delete(requestId);
       setResult($('ownerResult'), 'Request expired without approval.', 'denied');
-      resolve('The temporary request expired before the human approved it.');
+      resolve({ status: 'expired', capability: capabilityId });
     }, 90_000);
 
     pendingAgentRequests.set(requestId, {
@@ -285,7 +420,12 @@ async function requestRemoteNote(reason = '') {
       }
     });
 
-    sendPeer({ type: 'capability_request', requestId, reason: String(reason || '').slice(0, 240) });
+    sendPeer({
+      type: 'capability_request',
+      requestId,
+      capabilityId,
+      reason: String(reason || '').slice(0, 240)
+    });
   });
 }
 
@@ -300,27 +440,63 @@ async function registerWebMCPTools() {
 
   try {
     await document.modelContext.registerTool({
-      name: 'blink_borrow_request_private_note',
-      description: 'Request one-time access to the private note held locally by the connected Blink Borrow browser. The remote human must explicitly approve before the note crosses the peer-to-peer pipe.',
+      name: 'blink_borrow_list_capabilities',
+      description: 'List the temporary capabilities currently offered by the connected Blink Borrow capability holder. Listing does not reveal any private payload.',
+      inputSchema: { type: 'object', properties: {} },
+      execute: async () => {
+        const capabilities = Object.values(remoteCapabilities).map(({ id, label, description, mime, size }) => ({ id, label, description, mime, size }));
+        return { connected: Boolean(channel && channel.readyState === 'open'), capabilities };
+      },
+      annotations: { readOnlyHint: true }
+    }, { signal: toolController.signal });
+
+    await document.modelContext.registerTool({
+      name: 'blink_borrow_request_capability',
+      description: 'Request one offered capability from the connected Blink Borrow browser. The remote human must explicitly approve once before any payload crosses the direct peer-to-peer pipe.',
       inputSchema: {
         type: 'object',
+        required: ['capability_id'],
         properties: {
-          reason: { type: 'string', description: 'A short explanation of why the agent needs the remote private note.' }
+          capability_id: {
+            type: 'string',
+            enum: Object.keys(capabilityCatalog),
+            description: 'The capability identifier returned by blink_borrow_list_capabilities.'
+          },
+          reason: {
+            type: 'string',
+            description: 'A short human-readable explanation of why this capability is needed.'
+          }
         }
       },
-      execute: async ({ reason = '' }) => await requestRemoteNote(reason),
+      execute: async ({ capability_id, reason = '' }) => await requestCapability(capability_id, reason),
+      annotations: { readOnlyHint: true, untrustedContentHint: true }
+    }, { signal: toolController.signal });
+
+    // Backward-compatible tool preserved from the known-good v0.1 demo.
+    await document.modelContext.registerTool({
+      name: 'blink_borrow_request_private_note',
+      description: 'Request one-time access to the remote private note through Blink Borrow. The remote human must approve first.',
+      inputSchema: {
+        type: 'object',
+        properties: { reason: { type: 'string' } }
+      },
+      execute: async ({ reason = '' }) => await requestCapability('private_note', reason),
       annotations: { readOnlyHint: true, untrustedContentHint: true }
     }, { signal: toolController.signal });
 
     await document.modelContext.registerTool({
       name: 'blink_borrow_session_status',
-      description: 'Check whether the temporary Blink Borrow peer-to-peer capability pipe is connected.',
+      description: 'Check whether the temporary Blink Borrow P2P pipe is connected and how many capabilities are currently discoverable.',
       inputSchema: { type: 'object', properties: {} },
-      execute: async () => `P2P pipe connected: ${Boolean(channel && channel.readyState === 'open')}.`,
+      execute: async () => ({
+        p2p_connected: Boolean(channel && channel.readyState === 'open'),
+        capability_count: Object.keys(remoteCapabilities).length,
+        lease_stage: lastLeaseStage
+      }),
       annotations: { readOnlyHint: true }
     }, { signal: toolController.signal });
 
-    $('ownerTool').textContent = 'Registered ✓';
+    $('ownerTool').textContent = '4 registered ✓';
   } catch (error) {
     console.error(error);
     $('ownerTool').textContent = 'Registration failed';
@@ -356,27 +532,134 @@ async function joinSession() {
   }
 }
 
-function offerCapability() {
-  const note = $('privateNote').value.trim();
-  if (!note || !guest) return;
-  localNote = note;
-  setResult($('guestStatus'), 'Capability armed locally. The note stays on this browser until you approve a live request.', 'approved');
-  try { sendPeer({ type: 'capability_state', capabilityReady: true }); } catch {}
+function armCapability(id, value, extra = {}) {
+  const meta = capabilityCatalog[id];
+  if (!meta) return;
+  if (value === undefined || value === null || value === '') throw new Error('Capability payload is empty');
+
+  localCapabilities[id] = {
+    id,
+    label: meta.label,
+    description: meta.description,
+    mime: extra.mime || meta.mime,
+    value,
+    size: extra.size || String(value).length,
+    filename: extra.filename || null
+  };
+  publishManifest();
+}
+
+function setArmedState(id, text) {
+  const el = $(id);
+  el.textContent = text;
+  el.classList.add('armed');
+}
+
+function armPrivateNote() {
+  try {
+    const value = $('privateNote').value.trim();
+    armCapability('private_note', value);
+    setArmedState('privateNoteState', 'ARMED LOCALLY ✓');
+    setResult($('guestStatus'), 'Private Note armed locally. Waiting for a request.', 'approved');
+  } catch (error) {
+    setResult($('guestStatus'), error.message, 'denied');
+  }
+}
+
+function armTextJson() {
+  try {
+    const value = $('textJson').value.trim();
+    const mime = (() => { try { JSON.parse(value); return 'application/json'; } catch { return 'text/plain'; } })();
+    armCapability('text_json', value, { mime });
+    setArmedState('textJsonState', 'ARMED LOCALLY ✓');
+    setResult($('guestStatus'), 'Text / JSON armed locally. Waiting for a request.', 'approved');
+  } catch (error) {
+    setResult($('guestStatus'), error.message, 'denied');
+  }
+}
+
+async function armFile() {
+  const file = $('smallFile').files?.[0];
+  if (!file) return setResult($('guestStatus'), 'Choose a file first.', 'denied');
+  if (file.size > 256 * 1024) return setResult($('guestStatus'), 'File is larger than the 256 KB demo limit.', 'denied');
+  try {
+    const value = await file.text();
+    armCapability('small_file', value, {
+      mime: file.type || 'text/plain',
+      size: file.size,
+      filename: file.name
+    });
+    setArmedState('fileState', `ARMED · ${file.name}`);
+    setResult($('guestStatus'), `${file.name} armed locally. Waiting for a request.`, 'approved');
+  } catch (error) {
+    setResult($('guestStatus'), error.message, 'denied');
+  }
+}
+
+function armPageContext() {
+  try {
+    const visibleText = document.body.innerText.slice(0, 12000);
+    const payload = JSON.stringify({
+      title: document.title,
+      url: location.href,
+      visibleText,
+      capturedAt: new Date().toISOString()
+    });
+    armCapability('page_context', payload, { mime: 'application/json' });
+    setArmedState('pageState', 'CAPTURED & ARMED ✓');
+    setResult($('guestStatus'), 'Page Context captured locally. Waiting for a request.', 'approved');
+  } catch (error) {
+    setResult($('guestStatus'), error.message, 'denied');
+  }
 }
 
 function decide(decision) {
-  if (!guest || !activeGuestRequestId) return;
+  if (!guest || !activeGuestRequest) return;
+  const request = activeGuestRequest;
+  const cap = localCapabilities[request.capabilityId];
+
   try {
     if (decision === 'approve') {
-      if (!localNote) throw new Error('No local note is armed');
-      sendPeer({ type: 'capability_result', requestId: activeGuestRequestId, status: 'approved', value: localNote });
-      setResult($('guestStatus'), 'Approved once. The note crossed the direct P2P pipe.', 'approved');
+      if (!cap) throw new Error('That capability is no longer armed');
+      const preview = cap.filename || String(cap.value).replace(/\s+/g, ' ').slice(0, 90);
+      sendPeer({
+        type: 'capability_result',
+        requestId: request.requestId,
+        capabilityId: request.capabilityId,
+        status: 'approved',
+        payload: cap.value,
+        mime: cap.mime,
+        filename: cap.filename,
+        preview
+      });
+
+      // One-time lease: consume the capability immediately after one approved delivery.
+      delete localCapabilities[request.capabilityId];
+      publishManifest();
+      setResult($('guestStatus'), `Approved once. ${cap.label} crossed the direct P2P pipe and was revoked locally.`, 'approved');
+      const stateIds = {
+        private_note: 'privateNoteState',
+        text_json: 'textJsonState',
+        small_file: 'fileState',
+        page_context: 'pageState'
+      };
+      const stateEl = $(stateIds[request.capabilityId]);
+      if (stateEl) {
+        stateEl.textContent = 'CONSUMED · RE-ARM TO OFFER AGAIN';
+        stateEl.classList.remove('armed');
+      }
     } else {
-      sendPeer({ type: 'capability_result', requestId: activeGuestRequestId, status: 'denied' });
+      sendPeer({
+        type: 'capability_result',
+        requestId: request.requestId,
+        capabilityId: request.capabilityId,
+        status: 'denied'
+      });
       setResult($('guestStatus'), 'Denied. Nothing left this browser.', 'denied');
     }
+
     $('approvalCard').classList.add('hidden');
-    activeGuestRequestId = null;
+    activeGuestRequest = null;
   } catch (error) {
     setResult($('guestStatus'), error.message, 'denied');
   }
@@ -391,9 +674,12 @@ async function endSession() {
   }
   toolController?.abort();
   toolController = null;
+  updateLease('revoked');
   closePeer();
   sessionStorage.removeItem('blinkBorrowOwner');
   owner = null;
+  remoteCapabilities = {};
+  renderRemoteWallet();
   setResult($('ownerResult'), 'SESSION REVOKED. WebMCP tools removed. P2P capability pipe destroyed.', 'denied');
   $('ownerTool').textContent = 'Revoked';
   $('ownerRemote').textContent = 'Disconnected';
@@ -403,6 +689,12 @@ async function endSession() {
 
 async function restore() {
   try {
+    const inviteCode = new URLSearchParams(location.search).get('join');
+    if (inviteCode) {
+      loadInviteFromUrl();
+      return;
+    }
+
     const savedOwner = JSON.parse(sessionStorage.getItem('blinkBorrowOwner') || 'null');
     if (savedOwner?.code && savedOwner?.ownerKey) {
       owner = savedOwner;
@@ -431,14 +723,14 @@ async function restore() {
 
 $('createBtn').addEventListener('click', createSession);
 $('joinBtn').addEventListener('click', joinSession);
-$('offerBtn').addEventListener('click', offerCapability);
-$('approveBtn').addEventListener('click', () => decide('approve'));
-$('denyBtn').addEventListener('click', () => decide('deny'));
-$('manualRequestBtn').addEventListener('click', async () => {
-  try { await requestRemoteNote('Manual demo request'); } catch (error) { setResult($('ownerResult'), error.message, 'denied'); }
-});
 $('copyCodeBtn').addEventListener('click', copySessionCode);
 $('shareInviteBtn').addEventListener('click', shareInvite);
+$('armPrivateNoteBtn').addEventListener('click', armPrivateNote);
+$('armTextJsonBtn').addEventListener('click', armTextJson);
+$('armFileBtn').addEventListener('click', armFile);
+$('armPageBtn').addEventListener('click', armPageContext);
+$('approveBtn').addEventListener('click', () => decide('approve'));
+$('denyBtn').addEventListener('click', () => decide('deny'));
 $('endBtn').addEventListener('click', endSession);
 $('joinCode').addEventListener('keydown', (event) => { if (event.key === 'Enter') joinSession(); });
 
